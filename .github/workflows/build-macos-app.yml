@@ -3,12 +3,14 @@ name: Build macOS PQE Dashboard
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
 jobs:
   build-macos:
-    runs-on: macos-13
+    runs-on: macos-latest
 
     steps:
       - name: Checkout source
