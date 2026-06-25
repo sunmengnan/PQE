@@ -495,32 +495,56 @@ def parse_fai_workbook(path: Path) -> Tuple[List[Dict[str, Any]], Dict[str, Any]
     return records, metadata
 
 
-def find_input_files(input_dir: Path, cpk_file: Optional[str], fai_file: Optional[str]) -> Tuple[Path, Path]:
+def find_input_file_lists(input_dir: Path, cpk_file: Optional[str], fai_file: Optional[str]) -> Tuple[List[Path], List[Path]]:
     if cpk_file:
         cpk_path = Path(cpk_file)
         if not cpk_path.is_absolute():
             cpk_path = input_dir / cpk_path
+        cpk_paths = [cpk_path]
     else:
-        cpk_candidates = sorted(p for p in input_dir.glob("*.xls*") if "CPK" in p.name.upper() and not p.name.startswith(".~"))
-        if not cpk_candidates:
+        cpk_paths = sorted(p for p in input_dir.glob("*.xls*") if "CPK" in p.name.upper() and not p.name.startswith(".~") and not p.name.startswith("~$"))
+        if not cpk_paths:
             raise FileNotFoundError("No CPK Excel file found. Use --cpk-file.")
-        cpk_path = cpk_candidates[0]
 
     if fai_file:
         fai_path = Path(fai_file)
         if not fai_path.is_absolute():
             fai_path = input_dir / fai_path
+        fai_paths = [fai_path]
     else:
-        fai_candidates = sorted(p for p in input_dir.glob("*.xls*") if "FAI" in p.name.upper() and not p.name.startswith(".~"))
-        if not fai_candidates:
+        fai_paths = sorted(p for p in input_dir.glob("*.xls*") if "FAI" in p.name.upper() and not p.name.startswith(".~") and not p.name.startswith("~$"))
+        if not fai_paths:
             raise FileNotFoundError("No FAI Excel file found. Use --fai-file.")
-        fai_path = fai_candidates[0]
 
-    if not cpk_path.exists():
-        raise FileNotFoundError(str(cpk_path))
-    if not fai_path.exists():
-        raise FileNotFoundError(str(fai_path))
-    return cpk_path, fai_path
+    for path in cpk_paths + fai_paths:
+        if not path.exists():
+            raise FileNotFoundError(str(path))
+    return cpk_paths, fai_paths
+
+
+def find_input_files(input_dir: Path, cpk_file: Optional[str], fai_file: Optional[str]) -> Tuple[Path, Path]:
+    cpk_paths, fai_paths = find_input_file_lists(input_dir, cpk_file, fai_file)
+    return cpk_paths[0], fai_paths[0]
+
+
+def parse_cpk_workbooks(paths: List[Path], target_cpk: float) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    files = []
+    for path in paths:
+        file_records, _ = parse_cpk_workbook(path, target_cpk)
+        records.extend(file_records)
+        files.append(path.name)
+    return records, {"files": files, "type": "CPK", "records": len(records)}
+
+
+def parse_fai_workbooks(paths: List[Path]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    files = []
+    for path in paths:
+        file_records, _ = parse_fai_workbook(path)
+        records.extend(file_records)
+        files.append(path.name)
+    return records, {"files": files, "type": "FAI", "records": len(records)}
 
 
 def round_float(value: Any, digits: int = 6) -> Any:
@@ -556,7 +580,16 @@ def add_sheet(wb: Workbook, title: str, headers: List[str], rows: List[Dict[str,
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
 
-def build_summary_rows(cpk_records: List[Dict[str, Any]], fai_records: List[Dict[str, Any]], target_cpk: float, cpk_path: Path, fai_path: Path) -> List[Dict[str, Any]]:
+def source_label(source: Any) -> str:
+    if isinstance(source, (list, tuple)):
+        names = [Path(item).name for item in source]
+        if len(names) <= 5:
+            return "; ".join(names)
+        return "%s files: %s ..." % (len(names), "; ".join(names[:5]))
+    return Path(source).name
+
+
+def build_summary_rows(cpk_records: List[Dict[str, Any]], fai_records: List[Dict[str, Any]], target_cpk: float, cpk_path: Any, fai_path: Any) -> List[Dict[str, Any]]:
     fai_item_ok = sum(1 for r in fai_records if r.get("status") == "OK")
     fai_item_ng = sum(1 for r in fai_records if r.get("status") == "NG")
     fai_sample_ok = sum(int(r.get("sample_ok") or 0) for r in fai_records)
@@ -566,8 +599,8 @@ def build_summary_rows(cpk_records: List[Dict[str, Any]], fai_records: List[Dict
     spc_status = group_spc_status(fai_records)
     rows = [
         {"Metric": "Generated At", "Value": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
-        {"Metric": "CPK File", "Value": cpk_path.name},
-        {"Metric": "FAI File", "Value": fai_path.name},
+        {"Metric": "CPK File", "Value": source_label(cpk_path)},
+        {"Metric": "FAI File", "Value": source_label(fai_path)},
         {"Metric": "Target CPK", "Value": target_cpk},
         {"Metric": "CPK Dimension Rows", "Value": len(cpk_records)},
         {"Metric": "CPK Rows With CPK", "Value": len(cpk_with_value)},
@@ -630,7 +663,7 @@ def worst_cavity_rows(cpk_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return rows
 
 
-def export_workbook(output_path: Path, cpk_records: List[Dict[str, Any]], fai_records: List[Dict[str, Any]], target_cpk: float, cpk_path: Path, fai_path: Path) -> None:
+def export_workbook(output_path: Path, cpk_records: List[Dict[str, Any]], fai_records: List[Dict[str, Any]], target_cpk: float, cpk_path: Any, fai_path: Any) -> None:
     wb = Workbook()
     default = wb.active
     wb.remove(default)
@@ -686,7 +719,7 @@ def main() -> int:
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir).resolve()
-    cpk_path, fai_path = find_input_files(input_dir, args.cpk_file, args.fai_file)
+    cpk_paths, fai_paths = find_input_file_lists(input_dir, args.cpk_file, args.fai_file)
     if args.output:
         output_path = Path(args.output)
         if not output_path.is_absolute():
@@ -696,15 +729,17 @@ def main() -> int:
         output_path = input_dir / ("PQE_Phase1_Summary_%s.xlsx" % stamp)
 
     try:
-        cpk_records, cpk_meta = parse_cpk_workbook(cpk_path, args.target_cpk)
-        fai_records, fai_meta = parse_fai_workbook(fai_path)
-        export_workbook(output_path, cpk_records, fai_records, args.target_cpk, cpk_path, fai_path)
+        cpk_records, cpk_meta = parse_cpk_workbooks(cpk_paths, args.target_cpk)
+        fai_records, fai_meta = parse_fai_workbooks(fai_paths)
+        export_workbook(output_path, cpk_records, fai_records, args.target_cpk, cpk_paths, fai_paths)
     except BadZipFile as exc:
         raise SystemExit("Invalid Excel file: %s" % exc)
 
     low_count = sum(1 for r in cpk_records if r.get("cpk") is not None and r.get("cpk") < args.target_cpk)
     print("CPK records: %s" % cpk_meta["records"])
     print("FAI records: %s" % fai_meta["records"])
+    print("CPK files: %s" % len(cpk_paths))
+    print("FAI files: %s" % len(fai_paths))
     print("CPK < %.3f: %s" % (args.target_cpk, low_count))
     print("Output: %s" % output_path)
     return 0

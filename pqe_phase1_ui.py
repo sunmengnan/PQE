@@ -19,10 +19,10 @@ import streamlit as st
 from pqe_phase1_mvp import (
     export_workbook,
     extract_parenthesized_parts,
-    find_input_files,
+    find_input_file_lists,
     group_spc_status,
-    parse_cpk_workbook,
-    parse_fai_workbook,
+    parse_cpk_workbooks,
+    parse_fai_workbooks,
     worst_cavity_rows,
 )
 
@@ -89,25 +89,35 @@ def save_uploaded_file(uploaded_file) -> Path:
     return Path(temp.name)
 
 
-def load_from_local(input_dir: Path, cpk_file: Optional[str], fai_file: Optional[str], target_cpk: float) -> Tuple[List[dict], List[dict], Path, Path]:
-    cpk_path, fai_path = find_input_files(input_dir, cpk_file, fai_file)
-    cpk_records, _ = parse_cpk_workbook(cpk_path, target_cpk)
-    fai_records, _ = parse_fai_workbook(fai_path)
-    return cpk_records, fai_records, cpk_path, fai_path
+def load_from_local(input_dir: Path, cpk_file: Optional[str], fai_file: Optional[str], target_cpk: float) -> Tuple[List[dict], List[dict], List[Path], List[Path]]:
+    cpk_paths, fai_paths = find_input_file_lists(input_dir, cpk_file, fai_file)
+    cpk_records, _ = parse_cpk_workbooks(cpk_paths, target_cpk)
+    fai_records, _ = parse_fai_workbooks(fai_paths)
+    return cpk_records, fai_records, cpk_paths, fai_paths
 
 
-def load_from_uploads(cpk_upload, fai_upload, target_cpk: float) -> Tuple[List[dict], List[dict], Path, Path]:
-    cpk_path = save_uploaded_file(cpk_upload)
-    fai_path = save_uploaded_file(fai_upload)
-    cpk_records, _ = parse_cpk_workbook(cpk_path, target_cpk)
-    fai_records, _ = parse_fai_workbook(fai_path)
-    for record in cpk_records:
-        record["source_file"] = cpk_upload.name
-        record["file_tag"] = " | ".join(extract_parenthesized_parts(cpk_upload.name))
-    for record in fai_records:
-        record["source_file"] = fai_upload.name
-        record["file_tag"] = " | ".join(extract_parenthesized_parts(fai_upload.name))
-    return cpk_records, fai_records, cpk_path, fai_path
+def load_from_uploads(cpk_uploads, fai_uploads, target_cpk: float) -> Tuple[List[dict], List[dict], List[Path], List[Path]]:
+    cpk_records: List[dict] = []
+    fai_records: List[dict] = []
+    cpk_paths: List[Path] = []
+    fai_paths: List[Path] = []
+    for cpk_upload in cpk_uploads:
+        cpk_path = save_uploaded_file(cpk_upload)
+        cpk_paths.append(cpk_path)
+        file_records, _ = parse_cpk_workbooks([cpk_path], target_cpk)
+        for record in file_records:
+            record["source_file"] = cpk_upload.name
+            record["file_tag"] = " | ".join(extract_parenthesized_parts(cpk_upload.name))
+        cpk_records.extend(file_records)
+    for fai_upload in fai_uploads:
+        fai_path = save_uploaded_file(fai_upload)
+        fai_paths.append(fai_path)
+        file_records, _ = parse_fai_workbooks([fai_path])
+        for record in file_records:
+            record["source_file"] = fai_upload.name
+            record["file_tag"] = " | ".join(extract_parenthesized_parts(fai_upload.name))
+        fai_records.extend(file_records)
+    return cpk_records, fai_records, cpk_paths, fai_paths
 
 
 def quality_metrics(fai_records: List[dict]) -> Tuple[int, int, int, int]:
@@ -382,8 +392,8 @@ def main() -> None:
             load_clicked = st.button("解析数据", type="primary")
             load_args = ("local", input_dir, cpk_file, fai_file, target_cpk)
         else:
-            cpk_upload = st.file_uploader("上传 CPK Excel", type=["xlsx", "xlsm"])
-            fai_upload = st.file_uploader("上传 FAI Excel", type=["xlsx", "xlsm"])
+            cpk_upload = st.file_uploader("上传 CPK Excel（可多选）", type=["xlsx", "xlsm"], accept_multiple_files=True)
+            fai_upload = st.file_uploader("上传 FAI Excel（可多选）", type=["xlsx", "xlsm"], accept_multiple_files=True)
             load_clicked = st.button("解析上传文件", type="primary", disabled=not (cpk_upload and fai_upload))
             load_args = ("upload", cpk_upload, fai_upload, target_cpk)
 
@@ -457,8 +467,8 @@ def main() -> None:
                 cpk_records,
                 fai_records,
                 target_cpk,
-                Path(st.session_state.get("cpk_path", "CPK.xlsx")),
-                Path(st.session_state.get("fai_path", "FAI.xlsm")),
+                st.session_state.get("cpk_path", [Path("CPK.xlsx")]),
+                st.session_state.get("fai_path", [Path("FAI.xlsm")]),
             )
             output.write(Path(temp_output.name).read_bytes())
         st.download_button(
