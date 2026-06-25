@@ -1,21 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
-streamlit_datas = collect_data_files('streamlit') + copy_metadata('streamlit')
-plotly_datas = collect_data_files('plotly') + copy_metadata('plotly')
-pandas_datas = copy_metadata('pandas')
-openpyxl_datas = copy_metadata('openpyxl')
+streamlit_datas, streamlit_binaries, streamlit_hidden = collect_all('streamlit')
+plotly_datas, plotly_binaries, plotly_hidden = collect_all('plotly')
+pandas_datas, pandas_binaries, pandas_hidden = collect_all('pandas')
+numpy_datas, numpy_binaries, numpy_hidden = collect_all('numpy')
+openpyxl_datas, openpyxl_binaries, openpyxl_hidden = collect_all('openpyxl')
 
 datas = [
     ('../pqe_phase1_ui.py', '.'),
     ('../pqe_phase1_mvp.py', '.'),
 ]
-datas += streamlit_datas + plotly_datas + pandas_datas + openpyxl_datas
+datas += streamlit_datas + plotly_datas + pandas_datas + numpy_datas + openpyxl_datas
+binaries = streamlit_binaries + plotly_binaries + pandas_binaries + numpy_binaries + openpyxl_binaries
 
 hiddenimports = []
-hiddenimports += collect_submodules('streamlit')
-hiddenimports += collect_submodules('plotly')
+hiddenimports += streamlit_hidden + plotly_hidden + pandas_hidden + numpy_hidden + openpyxl_hidden
 hiddenimports += collect_submodules('openpyxl')
 hiddenimports += [
     'pandas',
@@ -29,7 +30,7 @@ block_cipher = None
 a = Analysis(
     ['pqe_desktop_launcher.py'],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

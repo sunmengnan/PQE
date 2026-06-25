@@ -30,6 +30,7 @@ jobs:
         working-directory: mac_package
         run: |
           pyinstaller --clean --noconfirm PQE_Dashboard.spec
+          PQE_DASHBOARD_SMOKE_TEST=1 "dist/PQE Dashboard.app/Contents/MacOS/PQE Dashboard"
           mkdir -p release
           cp -R "dist/PQE Dashboard.app" release/
           cd release
