@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# Runtime logs
+.pqe_ui_logs/
+*.log
+
+# Excel source data and generated reports
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+~$*
+.~*
+PQE_Phase1_Summary*.xlsx
+
+# Office temporary files
+*.docx
+
+# Local reference images
+sample.png
+
+# Build outputs
+build/
+dist/
+release/
+*.spec.bak
+
+# macOS
+.DS_Store
+
+# Keep packaging configuration, exclude generated zips/apps
+*.zip
+*.app/
+
+# Local editor
+.vscode/
+.idea/

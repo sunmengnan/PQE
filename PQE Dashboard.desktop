@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=PQE 数据分析平台
+Comment=打开 PQE CPK/FAI 数据分析页面
+Exec=/home/nordbo/Documents/2177PQE/open_pqe_dashboard.sh
+Icon=applications-office
+Terminal=false
+Categories=Office;Science;Engineering;
+StartupNotify=true
