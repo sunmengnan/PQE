@@ -30,6 +30,16 @@ def log(message: str) -> None:
         pass
 
 
+def redirect_output_to_log() -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stream = LOG_FILE.open("a", encoding="utf-8", buffering=1)
+        sys.stdout = stream
+        sys.stderr = stream
+    except Exception:
+        pass
+
+
 def resource_dir() -> Path:
     if getattr(sys, "frozen", False):
         candidates = [
@@ -73,6 +83,7 @@ def open_browser_when_ready(url: str) -> None:
 
 
 def main() -> int:
+    redirect_output_to_log()
     log("Starting PQE Dashboard launcher")
     app_dir = resource_dir()
     log(f"Resource directory: {app_dir}")
@@ -90,28 +101,36 @@ def main() -> int:
         log("Smoke test import completed")
         return 0
 
-    port = find_free_port()
+    port = int(os.environ.get("PQE_DASHBOARD_PORT") or find_free_port())
     url = f"http://127.0.0.1:{port}"
     log(f"Selected URL: {url}")
     os.environ.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
     os.environ.setdefault("STREAMLIT_SERVER_HEADLESS", "true")
     os.environ.setdefault("STREAMLIT_SERVER_ENABLE_CORS", "false")
     os.environ.setdefault("STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION", "false")
+    os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
+    os.environ.setdefault("STREAMLIT_GLOBAL_DEVELOPMENT_MODE", "false")
 
-    threading.Thread(target=open_browser_when_ready, args=(url,), daemon=True).start()
+    if os.environ.get("PQE_DASHBOARD_NO_BROWSER") != "1":
+        threading.Thread(target=open_browser_when_ready, args=(url,), daemon=True).start()
 
-    from streamlit.web import bootstrap
+    from streamlit.web import cli as stcli
 
-    flag_options = {
-        "server.port": port,
-        "server.headless": True,
-        "server.enableCORS": False,
-        "server.enableXsrfProtection": False,
-        "browser.gatherUsageStats": False,
-    }
-    log("Starting Streamlit bootstrap")
-    bootstrap.run(str(script_path), False, [], flag_options)
-    return 0
+    sys.argv = [
+        "streamlit",
+        "run",
+        str(script_path),
+        "--server.address=127.0.0.1",
+        f"--server.port={port}",
+        "--server.headless=true",
+        "--server.enableCORS=false",
+        "--server.enableXsrfProtection=false",
+        "--server.fileWatcherType=none",
+        "--browser.gatherUsageStats=false",
+        "--global.developmentMode=false",
+    ]
+    log("Starting Streamlit CLI: " + " ".join(sys.argv))
+    return int(stcli.main() or 0)
 
 
 if __name__ == "__main__":

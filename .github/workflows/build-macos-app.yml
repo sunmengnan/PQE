@@ -39,6 +39,28 @@ jobs:
           lipo -archs "dist/PQE Dashboard.app/Contents/MacOS/PQE Dashboard"
           test "$(lipo -archs "dist/PQE Dashboard.app/Contents/MacOS/PQE Dashboard")" = "arm64"
           PQE_DASHBOARD_SMOKE_TEST=1 "dist/PQE Dashboard.app/Contents/MacOS/PQE Dashboard"
+          PQE_DASHBOARD_NO_BROWSER=1 PQE_DASHBOARD_PORT=8765 "dist/PQE Dashboard.app/Contents/MacOS/PQE Dashboard" &
+          APP_PID=$!
+          for i in {1..120}; do
+            if curl -fsS "http://127.0.0.1:8765" >/dev/null; then
+              echo "Packaged app HTTP smoke test passed"
+              kill "$APP_PID" || true
+              wait "$APP_PID" || true
+              break
+            fi
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "Packaged app exited before HTTP smoke test passed"
+              cat "$HOME/Library/Logs/PQE Dashboard/launcher.log" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            echo "Packaged app HTTP smoke test timed out"
+            cat "$HOME/Library/Logs/PQE Dashboard/launcher.log" || true
+            kill "$APP_PID" || true
+            exit 1
+          fi
           mkdir -p release
           cp -R "dist/PQE Dashboard.app" release/
           cd release
