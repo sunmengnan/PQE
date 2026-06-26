@@ -35,12 +35,16 @@ DISPLAY_COLUMNS = [
     "dimension_type", "nominal", "tol_plus", "tol_minus", "usl", "lsl", "mean", "stddev", "cpk",
     "proposed_tol_plus", "proposed_tol_minus", "proposed_usl", "proposed_lsl", "proposed_cpk", "status", "cpk_status",
 ]
+NUMERIC_COLUMNS = ["mean", "stddev", "cpk", "proposed_cpk", "nominal", "usl", "lsl", "proposed_usl", "proposed_lsl"]
 
 
 def records_to_frame(records: List[dict]) -> pd.DataFrame:
     df = pd.DataFrame(records)
     if df.empty:
         return df
+    for column in DISPLAY_COLUMNS:
+        if column not in df.columns:
+            df[column] = pd.NA
     for column in GROUP_FIELDS + ["source_file", "report_type", "sheet_kind"]:
         if column in df.columns:
             df[column] = df[column].fillna("").astype(str)
@@ -48,7 +52,7 @@ def records_to_frame(records: List[dict]) -> pd.DataFrame:
         df["file_tag"] = df["source_file"].apply(lambda value: " | ".join(extract_parenthesized_parts(str(value))))
     elif "file_tag" in df.columns:
         df["file_tag"] = df["file_tag"].fillna("").astype(str)
-    for column in ["mean", "stddev", "cpk", "proposed_cpk", "nominal", "usl", "lsl", "proposed_usl", "proposed_lsl"]:
+    for column in NUMERIC_COLUMNS:
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
     return df
