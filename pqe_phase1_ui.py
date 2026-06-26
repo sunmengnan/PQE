@@ -6,6 +6,7 @@ The desktop launcher opens this page for non-technical users.
 
 from __future__ import annotations
 
+import re
 import tempfile
 from io import BytesIO
 from pathlib import Path
@@ -36,6 +37,11 @@ DISPLAY_COLUMNS = [
     "proposed_tol_plus", "proposed_tol_minus", "proposed_usl", "proposed_lsl", "proposed_cpk", "status", "cpk_status",
 ]
 NUMERIC_COLUMNS = ["mean", "stddev", "cpk", "proposed_cpk", "nominal", "usl", "lsl", "proposed_usl", "proposed_lsl"]
+
+
+def natural_sort_key(value: object) -> List[object]:
+    text = str(value)
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
 
 
 def records_to_frame(records: List[dict]) -> pd.DataFrame:
@@ -204,86 +210,165 @@ def add_reference_lines(fig: go.Figure, data: pd.DataFrame) -> None:
         )
 
 
-def draw_fai_mean_chart(plot_df: pd.DataFrame, title: str) -> None:
+def build_control_chart_summary(plot_df: pd.DataFrame, x_field: str) -> pd.DataFrame:
+    if plot_df.empty or x_field not in plot_df.columns:
+        return pd.DataFrame()
+    summary = plot_df.groupby(x_field, dropna=False, sort=False).agg(
+        mean_value=("mean", "mean"),
+        count=("mean", "size"),
+        min_mean=("mean", "min"),
+        max_mean=("mean", "max"),
+        min_cpk=("cpk", "min"),
+        nominal=("nominal", "mean"),
+        ucl=("usl", "mean"),
+        lcl=("lsl", "mean"),
+    ).reset_index()
+    summary[x_field] = summary[x_field].fillna("").astype(str)
+    summary = summary.sort_values(x_field, key=lambda series: series.map(natural_sort_key))
+    return summary
+
+
+def draw_spc_control_chart(plot_df: pd.DataFrame, x_field: str, title: str, xaxis_title: str) -> None:
     if plot_df.empty:
         st.warning("当前筛选条件下没有数据。")
         return
+    if x_field not in plot_df.columns:
+        st.warning(f"当前数据缺少 {x_field} 字段，无法绘制控制图。")
+        return
+    summary = build_control_chart_summary(plot_df, x_field)
+    if summary.empty:
+        st.warning("当前筛选条件下没有可汇总的数据。")
+        return
+
+    chart_df = plot_df.copy()
+    chart_df[x_field] = chart_df[x_field].fillna("").astype(str)
+    categories = summary[x_field].astype(str).tolist()
     fig = go.Figure()
-    for fai_no in unique_values(plot_df, "fai_no"):
-        values = plot_df.loc[plot_df["fai_no"].astype(str) == str(fai_no), "mean"]
-        fig.add_trace(go.Box(
+    fig.add_trace(go.Scatter(
+        x=chart_df[x_field],
+        y=chart_df["mean"],
+        mode="markers",
+        name="Mean 明细点",
+        marker=dict(color="rgba(31, 119, 180, 0.52)", size=8),
+        customdata=chart_df[["source_file", "cavity", "spc_no", "fai_no"]].fillna("").to_numpy(),
+        hovertemplate=(
+            f"{xaxis_title}: %{{x}}<br>mean: %{{y:.6g}}"
+            "<br>source_file: %{customdata[0]}"
+            "<br>cavity: %{customdata[1]}"
+            "<br>spc_no: %{customdata[2]}"
+            "<br>fai_no: %{customdata[3]}<extra></extra>"
+        ),
+    ))
+    fig.add_trace(go.Scatter(
+        x=summary[x_field],
+        y=summary["mean_value"],
+        mode="lines+markers",
+        name="Mean 平均值",
+        line=dict(color="#1f77b4", width=2),
+        marker=dict(size=9),
+        hovertemplate=f"{xaxis_title}: %{{x}}<br>平均 mean: %{{y:.6g}}<extra></extra>",
+    ))
+    limit_specs = [
+        ("ucl", "UCL", "#d62728", "dash"),
+        ("nominal", "Nominal", "#2ca02c", "solid"),
+        ("lcl", "LCL", "#d62728", "dash"),
+    ]
+    for column, label, color, dash in limit_specs:
+        values = pd.to_numeric(summary[column], errors="coerce")
+        if values.dropna().empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=summary[x_field],
             y=values,
-            x=[f"FAI {fai_no}"] * len(values),
-            name=f"FAI {fai_no}",
-            boxpoints="all",
-            jitter=0.35,
-            pointpos=0,
+            mode="lines+markers",
+            name=label,
+            line=dict(color=color, width=2, dash=dash),
+            marker=dict(size=7, symbol="line-ew"),
+            connectgaps=False,
+            hovertemplate=f"{xaxis_title}: %{{x}}<br>{label}: %{{y:.6g}}<extra></extra>",
         ))
-    add_reference_lines(fig, plot_df)
     fig.update_layout(
         title=title,
-        height=560,
-        xaxis_title="FAI No",
+        height=620,
+        xaxis_title=xaxis_title,
         yaxis_title="mean",
-        showlegend=False,
+        showlegend=True,
+        hovermode="x unified",
         plot_bgcolor="rgba(240, 250, 240, 0.55)",
+        xaxis=dict(categoryorder="array", categoryarray=categories, tickangle=-35),
     )
     st.plotly_chart(fig, use_container_width=True)
-
-    summary = plot_df.groupby("fai_no", dropna=False).agg(
-        mean_value=("mean", "mean"),
-        count=("mean", "size"),
-        min_cpk=("cpk", "min"),
-        nominal=("nominal", "mean"),
-        drawing_usl=("usl", "mean"),
-        drawing_lsl=("lsl", "mean"),
-        proposed_usl=("proposed_usl", "mean"),
-        proposed_lsl=("proposed_lsl", "mean"),
-    ).reset_index()
     st.dataframe(summary, use_container_width=True)
 
 
 def render_quadrant_tab(df: pd.DataFrame) -> None:
-    st.subheader("象限图：指定 spc_no，显示不同 fai_no 的 mean 分布")
+    st.subheader("统计过程控制图：按 SPC / FAI / cavity 汇总 mean")
     base = df.dropna(subset=["mean"]).copy()
     if base.empty:
         st.warning("没有可绘制的 mean 数据。")
         return
 
-    c1, c2, c3, c4 = st.columns(4)
+    mode = st.radio(
+        "控制图模式",
+        [
+            "1. 指定 SPC → 不同 FAI 的 mean 控制图",
+            "2. 指定 FAI → 不同 SPC 的 mean 控制图",
+            "3. 指定 cavity → 不同文件名的 mean 控制图",
+        ],
+        horizontal=False,
+    )
+
+    c1, c2, c3 = st.columns(3)
     with c1:
         source_filter = st.multiselect("筛选 source_file", unique_values(base, "source_file"), key="quad_source")
     with c2:
         file_tag_filter = st.multiselect("筛选文件名括号字段", unique_values(base, "file_tag"), key="quad_file_tag")
     with c3:
-        spc_options = unique_values(base, "spc_no")
-        selected_spc = st.selectbox("指定 spc_no", spc_options, index=0 if spc_options else None, key="quad_spc_single")
-    with c4:
-        use_cavity_dimension = st.checkbox("增加 cavity 维度", value=True)
+        report_filter = st.multiselect("筛选 report_type", unique_values(base, "report_type"), key="quad_report_type")
 
     base = apply_multiselect_filter(base, "source_file", source_filter)
     base = apply_multiselect_filter(base, "file_tag", file_tag_filter)
-    if selected_spc:
-        base = base[base["spc_no"].astype(str) == str(selected_spc)]
+    base = apply_multiselect_filter(base, "report_type", report_filter)
 
-    fai_filter = st.multiselect("筛选 fai_no（不选则显示该 spc_no 下全部 fai_no）", unique_values(base, "fai_no"), key="quad_fai")
-    base = apply_multiselect_filter(base, "fai_no", fai_filter)
+    if mode.startswith("1."):
+        spc_options = unique_values(base, "spc_no")
+        selected_spc = st.multiselect("指定 SPC（可多选）", spc_options, default=spc_options[:1], key="quad_mode1_spc")
+        plot_df = apply_multiselect_filter(base, "spc_no", selected_spc)
+        cavity_options = unique_values(plot_df, "cavity")
+        selected_cavities = st.multiselect("筛选 cavity（可选）", cavity_options, key="quad_mode1_cavity")
+        plot_df = apply_multiselect_filter(plot_df, "cavity", selected_cavities)
+        title = "指定 SPC：%s → 不同 FAI 的 mean 控制图" % (", ".join(selected_spc) if selected_spc else "未选择")
+        x_field = "fai_no"
+        xaxis_title = "FAI"
+    elif mode.startswith("2."):
+        fai_options = unique_values(base, "fai_no")
+        selected_fai = st.multiselect("指定 FAI（可多选）", fai_options, default=fai_options[:1], key="quad_mode2_fai")
+        plot_df = apply_multiselect_filter(base, "fai_no", selected_fai)
+        cavity_options = unique_values(plot_df, "cavity")
+        selected_cavities = st.multiselect("筛选 cavity（可选）", cavity_options, key="quad_mode2_cavity")
+        plot_df = apply_multiselect_filter(plot_df, "cavity", selected_cavities)
+        title = "指定 FAI：%s → 不同 SPC 的 mean 控制图" % (", ".join(selected_fai) if selected_fai else "未选择")
+        x_field = "spc_no"
+        xaxis_title = "SPC"
+    else:
+        cavity_options = unique_values(base, "cavity")
+        selected_cavities = st.multiselect("指定 cavity（可多选）", cavity_options, default=cavity_options[:1], key="quad_mode3_cavity")
+        plot_df = apply_multiselect_filter(base, "cavity", selected_cavities)
+        f1, f2 = st.columns(2)
+        with f1:
+            spc_filter = st.multiselect("筛选 SPC（可选）", unique_values(plot_df, "spc_no"), key="quad_mode3_spc")
+        with f2:
+            fai_filter = st.multiselect("筛选 FAI（可选）", unique_values(plot_df, "fai_no"), key="quad_mode3_fai")
+        plot_df = apply_multiselect_filter(plot_df, "spc_no", spc_filter)
+        plot_df = apply_multiselect_filter(plot_df, "fai_no", fai_filter)
+        title = "指定 cavity：%s → 不同文件名的 mean 控制图" % (", ".join(selected_cavities) if selected_cavities else "未选择")
+        x_field = "source_file"
+        xaxis_title = "文件名"
 
-    if use_cavity_dimension:
-        cavity_values = unique_values(base, "cavity")
-        selected_cavities = st.multiselect("选择 cavity 图层", cavity_values, default=cavity_values, key="quad_cavity_layers")
-        base = apply_multiselect_filter(base, "cavity", selected_cavities)
-
-    if base.empty:
+    if plot_df.empty:
         st.warning("当前筛选条件下没有数据。")
         return
-
-    if use_cavity_dimension:
-        for cavity in unique_values(base, "cavity"):
-            cavity_df = base[base["cavity"].astype(str) == str(cavity)]
-            draw_fai_mean_chart(cavity_df, f"SPC {selected_spc} - {cavity} 不同 FAI 的 mean 分布")
-    else:
-        draw_fai_mean_chart(base, f"SPC {selected_spc} 不同 FAI 的 mean 分布")
+    draw_spc_control_chart(plot_df, x_field, title, xaxis_title)
 
 
 def render_matrix_tab(df: pd.DataFrame) -> None:
