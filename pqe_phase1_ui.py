@@ -228,6 +228,15 @@ def build_control_chart_summary(plot_df: pd.DataFrame, x_field: str) -> pd.DataF
     return summary
 
 
+def mean_numeric_value(data: pd.DataFrame, column: str) -> Optional[float]:
+    if column not in data.columns:
+        return None
+    values = pd.to_numeric(data[column], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return float(values.mean())
+
+
 def draw_spc_control_chart(plot_df: pd.DataFrame, x_field: str, title: str, xaxis_title: str) -> None:
     if plot_df.empty:
         st.warning("当前筛选条件下没有数据。")
@@ -263,30 +272,55 @@ def draw_spc_control_chart(plot_df: pd.DataFrame, x_field: str, title: str, xaxi
         x=summary[x_field],
         y=summary["mean_value"],
         mode="lines+markers",
-        name="Mean 平均值",
+        name="Subgroup MEAN",
         line=dict(color="#1f77b4", width=2),
         marker=dict(size=9),
         hovertemplate=f"{xaxis_title}: %{{x}}<br>平均 mean: %{{y:.6g}}<extra></extra>",
     ))
-    limit_specs = [
-        ("ucl", "UCL", "#d62728", "dash"),
-        ("nominal", "Nominal", "#2ca02c", "solid"),
+    control_specs = [
+        ("ucl", "USL / UCL", "#d62728", "dash"),
         ("lcl", "LCL", "#d62728", "dash"),
+        ("nominal", "Nominal", "#2ca02c", "solid"),
     ]
-    for column, label, color, dash in limit_specs:
-        values = pd.to_numeric(summary[column], errors="coerce")
-        if values.dropna().empty:
+    for column, label, color, dash in control_specs:
+        level = mean_numeric_value(summary, column)
+        if level is None:
             continue
         fig.add_trace(go.Scatter(
-            x=summary[x_field],
-            y=values,
+            x=categories,
+            y=[level] * len(categories),
             mode="lines+markers",
             name=label,
             line=dict(color=color, width=2, dash=dash),
-            marker=dict(size=7, symbol="line-ew"),
-            connectgaps=False,
-            hovertemplate=f"{xaxis_title}: %{{x}}<br>{label}: %{{y:.6g}}<extra></extra>",
+            marker=dict(size=6, symbol="line-ew"),
+            hovertemplate=f"{label}: %{{y:.6g}}<extra></extra>",
         ))
+        fig.add_hline(
+            y=level,
+            line_color=color,
+            line_dash=dash,
+            line_width=1,
+            annotation_text=label,
+            annotation_position="right",
+        )
+    center_level = mean_numeric_value(summary, "mean_value")
+    if center_level is not None:
+        fig.add_trace(go.Scatter(
+            x=categories,
+            y=[center_level] * len(categories),
+            mode="lines",
+            name="MEAN",
+            line=dict(color="#1f77b4", width=2, dash="dot"),
+            hovertemplate="MEAN: %{y:.6g}<extra></extra>",
+        ))
+        fig.add_hline(
+            y=center_level,
+            line_color="#1f77b4",
+            line_dash="dot",
+            line_width=1,
+            annotation_text="MEAN",
+            annotation_position="right",
+        )
     fig.update_layout(
         title=title,
         height=620,
@@ -307,6 +341,7 @@ def render_quadrant_tab(df: pd.DataFrame) -> None:
     if base.empty:
         st.warning("没有可绘制的 mean 数据。")
         return
+    loaded_source_options = unique_values(df, "source_file")
 
     mode = st.radio(
         "控制图模式",
@@ -320,11 +355,12 @@ def render_quadrant_tab(df: pd.DataFrame) -> None:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        source_filter = st.multiselect("筛选 source_file", unique_values(base, "source_file"), key="quad_source")
+        source_filter = st.multiselect("筛选 source_file", loaded_source_options, key="quad_source")
     with c2:
         file_tag_filter = st.multiselect("筛选文件名括号字段", unique_values(base, "file_tag"), key="quad_file_tag")
     with c3:
         report_filter = st.multiselect("筛选 report_type", unique_values(base, "report_type"), key="quad_report_type")
+    st.caption("当前已加载 source_file 数: %s" % len(loaded_source_options))
 
     base = apply_multiselect_filter(base, "source_file", source_filter)
     base = apply_multiselect_filter(base, "file_tag", file_tag_filter)

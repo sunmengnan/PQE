@@ -682,10 +682,19 @@ def worst_cavity_rows(cpk_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     for spc_no, records in sorted(groups.items()):
         worst = min(records, key=lambda r: r.get("cpk"))
         rows.append({
+            "source_file": worst.get("source_file"),
+            "file_tag": worst.get("file_tag"),
+            "sheet_name": worst.get("sheet_name"),
             "spc_no": spc_no,
             "worst_sheet_kind": worst.get("sheet_kind"),
             "worst_fai_no": worst.get("fai_no"),
             "description": worst.get("description"),
+            "dimension_type": worst.get("dimension_type"),
+            "nominal": worst.get("nominal"),
+            "tol_plus": worst.get("tol_plus"),
+            "tol_minus": worst.get("tol_minus"),
+            "usl": worst.get("usl"),
+            "lsl": worst.get("lsl"),
             "worst_cavity": worst.get("cavity"),
             "worst_cpk": worst.get("cpk"),
             "worst_mean": worst.get("mean"),
@@ -735,7 +744,11 @@ def export_workbook(output_path: Path, cpk_records: List[Dict[str, Any]], fai_re
     add_sheet(wb, "CPK_SPC_OK_NG", ["source_file", "spc_no", "fai_no", "row_count", "min_cpk", "spc_status"], cpk_spc_rows)
 
     worst_rows = worst_cavity_rows(cpk_records)
-    add_sheet(wb, "Worst_Cavity", ["spc_no", "worst_sheet_kind", "worst_fai_no", "description", "worst_cavity", "worst_cpk", "worst_mean", "worst_stddev", "sample_count"], worst_rows)
+    add_sheet(wb, "Worst_Cavity", [
+        "source_file", "file_tag", "sheet_name", "spc_no", "worst_sheet_kind", "worst_fai_no", "description",
+        "dimension_type", "nominal", "tol_plus", "tol_minus", "usl", "lsl", "worst_cavity", "worst_cpk",
+        "worst_mean", "worst_stddev", "sample_count",
+    ], worst_rows)
 
     raw_headers = cpk_headers + ["samples_json"]
     add_sheet(wb, "Raw_Normalized_CPK", raw_headers, cpk_records)
