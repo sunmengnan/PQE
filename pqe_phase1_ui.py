@@ -20,6 +20,7 @@ from pqe_phase1_mvp import (
     export_workbook,
     extract_parenthesized_parts,
     find_input_file_lists,
+    group_cpk_spc_status,
     group_spc_status,
     parse_cpk_workbooks,
     parse_fai_workbooks,
@@ -89,8 +90,16 @@ def save_uploaded_file(uploaded_file) -> Path:
     return Path(temp.name)
 
 
-def load_from_local(input_dir: Path, cpk_file: Optional[str], fai_file: Optional[str], target_cpk: float) -> Tuple[List[dict], List[dict], List[Path], List[Path]]:
-    cpk_paths, fai_paths = find_input_file_lists(input_dir, cpk_file, fai_file)
+def load_from_local(input_dir: Path, cpk_file: Optional[str], fai_file: Optional[str], target_cpk: float, include_cpk: bool = True, include_fai: bool = True) -> Tuple[List[dict], List[dict], List[Path], List[Path]]:
+    if not include_cpk and not include_fai:
+        raise FileNotFoundError("Please select CPK or FAI to parse.")
+    cpk_paths, fai_paths = find_input_file_lists(input_dir, cpk_file, fai_file, require_cpk=False, require_fai=False)
+    if not include_cpk:
+        cpk_paths = []
+    if not include_fai:
+        fai_paths = []
+    if not cpk_paths and not fai_paths:
+        raise FileNotFoundError("No CPK or FAI Excel file found.")
     cpk_records, _ = parse_cpk_workbooks(cpk_paths, target_cpk)
     fai_records, _ = parse_fai_workbooks(fai_paths)
     return cpk_records, fai_records, cpk_paths, fai_paths
@@ -120,10 +129,10 @@ def load_from_uploads(cpk_uploads, fai_uploads, target_cpk: float) -> Tuple[List
     return cpk_records, fai_records, cpk_paths, fai_paths
 
 
-def quality_metrics(fai_records: List[dict]) -> Tuple[int, int, int, int]:
+def quality_metrics(fai_records: List[dict], cpk_records: List[dict], target_cpk: float) -> Tuple[int, int, int, int]:
     fai_ok = sum(1 for record in fai_records if record.get("status") == "OK")
     fai_ng = sum(1 for record in fai_records if record.get("status") == "NG")
-    spc_rows = group_spc_status(fai_records)
+    spc_rows = group_cpk_spc_status(cpk_records, target_cpk)
     spc_ok = sum(1 for row in spc_rows if row.get("spc_status") == "OK")
     spc_ng = sum(1 for row in spc_rows if row.get("spc_status") == "NG")
     return fai_ok, fai_ng, spc_ok, spc_ng
@@ -387,26 +396,31 @@ def main() -> None:
 
         if source_mode == "工作目录自动读取":
             input_dir = Path(st.text_input("Input directory", str(DEFAULT_DIR))).expanduser().resolve()
+            parse_col1, parse_col2 = st.columns(2)
+            with parse_col1:
+                include_cpk = st.checkbox("解析 CPK", value=True)
+            with parse_col2:
+                include_fai = st.checkbox("解析 FAI", value=True)
             cpk_file = st.text_input("CPK 文件名（可选）", "") or None
             fai_file = st.text_input("FAI 文件名（可选）", "") or None
-            load_clicked = st.button("解析数据", type="primary")
-            load_args = ("local", input_dir, cpk_file, fai_file, target_cpk)
+            load_clicked = st.button("解析数据", type="primary", disabled=not (include_cpk or include_fai))
+            load_args = ("local", input_dir, cpk_file, fai_file, target_cpk, include_cpk, include_fai)
         else:
             cpk_upload = st.file_uploader("上传 CPK Excel（可多选）", type=["xlsx", "xlsm"], accept_multiple_files=True)
             fai_upload = st.file_uploader("上传 FAI Excel（可多选）", type=["xlsx", "xlsm"], accept_multiple_files=True)
-            load_clicked = st.button("解析上传文件", type="primary", disabled=not (cpk_upload and fai_upload))
+            load_clicked = st.button("解析上传文件", type="primary", disabled=not (cpk_upload or fai_upload))
             load_args = ("upload", cpk_upload, fai_upload, target_cpk)
 
     if load_clicked or "pqe_df" not in st.session_state:
         try:
             with st.spinner("正在解析 Excel 并计算指标..."):
                 if load_args[0] == "local":
-                    _, input_dir, cpk_file, fai_file, target_cpk = load_args
-                    cpk_records, fai_records, cpk_path, fai_path = load_from_local(input_dir, cpk_file, fai_file, target_cpk)
+                    _, input_dir, cpk_file, fai_file, target_cpk, include_cpk, include_fai = load_args
+                    cpk_records, fai_records, cpk_path, fai_path = load_from_local(input_dir, cpk_file, fai_file, target_cpk, include_cpk, include_fai)
                 else:
                     _, cpk_upload, fai_upload, target_cpk = load_args
-                    if not cpk_upload or not fai_upload:
-                        st.info("请先上传 CPK 和 FAI 文件。")
+                    if not cpk_upload and not fai_upload:
+                        st.info("请至少上传 CPK 或 FAI 文件。")
                         return
                     cpk_records, fai_records, cpk_path, fai_path = load_from_uploads(cpk_upload, fai_upload, target_cpk)
                 df = records_to_frame(cpk_records + fai_records)
@@ -430,14 +444,15 @@ def main() -> None:
     cpk_records = st.session_state.get("cpk_records", [])
     fai_records = st.session_state.get("fai_records", [])
     target_cpk = st.session_state.get("target_cpk", 1.33)
+    cpk_table_records = [record for record in cpk_records if record.get("sheet_kind") == "CPK"]
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("总记录数", len(df))
-    m2.metric("CPK记录数", len(cpk_records))
+    m1.metric("总记录数", len(cpk_table_records) + len(fai_records))
+    m2.metric("CPK记录数", len(cpk_table_records))
     m3.metric("FAI记录数", len(fai_records))
-    m4.metric("低于目标CPK数", int(((df.get("cpk") < target_cpk) & df.get("cpk").notna()).sum()) if "cpk" in df.columns else 0)
+    m4.metric("低于目标CPK数", sum(1 for record in cpk_table_records if record.get("cpk") is not None and record.get("cpk") < target_cpk))
 
-    fai_ok, fai_ng, spc_ok, spc_ng = quality_metrics(fai_records)
+    fai_ok, fai_ng, spc_ok, spc_ng = quality_metrics(fai_records, cpk_records, target_cpk)
     q1, q2, q3, q4 = st.columns(4)
     q1.metric("FAI编号尺寸OK数", fai_ok)
     q2.metric("FAI编号尺寸NG数", fai_ng)

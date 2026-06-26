@@ -160,19 +160,20 @@ class ExcelXmlReader:
 
 
 def normalize_cavity(sheet_name: str) -> str:
-    match = re.search(r"(?:CAV\s*)(\d+)|(?:Na\s*)(\d+)", sheet_name, flags=re.I)
-    if not match:
-        return sheet_name.strip()
-    value = match.group(1) or match.group(2)
-    prefix = "Na" if sheet_name.strip().lower().startswith("na") else "CAV"
-    return "%s%s" % (prefix, int(value))
+    cav_match = re.search(r"CAV\s*(\d+)", sheet_name, flags=re.I)
+    if cav_match:
+        return "CAV%s" % int(cav_match.group(1))
+    n_match = re.match(r"\s*(N[A-Za-z])\s*(\d+)", sheet_name, flags=re.I)
+    if n_match:
+        return "%s%s" % (n_match.group(1), int(n_match.group(2)))
+    return sheet_name.strip()
 
 
 def compute_limits(dim_type: str, nominal: Optional[float], tol_plus: Optional[float], tol_minus: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
     dim = dim_type.strip().upper()
     if dim in ("GD&T", "GDT"):
         # GD&T values in these templates are non-negative deviation values.
-        return 0.0, tol_plus
+        return None, tol_plus
     if dim == "MIN":
         lower = tol_plus if tol_plus is not None else nominal
         return lower, None
@@ -440,7 +441,7 @@ def parse_cpk_workbook(path: Path, target_cpk: float) -> Tuple[List[Dict[str, An
 def parse_fai_workbook(path: Path) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     with ExcelXmlReader(path) as reader:
-        fai_sheets = [s for s in reader.sheet_names() if re.match(r"Na\s*\d+", s, flags=re.I)]
+        fai_sheets = [s for s in reader.sheet_names() if re.match(r"N[A-Za-z]\s*\d+", s, flags=re.I)]
         part_info = parse_part_info(reader, fai_sheets + reader.sheet_names())
         for sheet_name in fai_sheets:
             cavity = normalize_cavity(sheet_name)
@@ -462,6 +463,8 @@ def parse_fai_workbook(path: Path) -> Tuple[List[Dict[str, Any]], Dict[str, Any]
                     if value is not None:
                         samples.append(value)
                 stats = calc_stats(samples, lower, upper)
+                if stats["sample_count"] != 3 or stats["sample_ng"]:
+                    stats["status"] = "NG"
                 record: Dict[str, Any] = {
                     "source_file": path.name,
                     "file_tag": file_tag_text(path.name),
@@ -495,7 +498,7 @@ def parse_fai_workbook(path: Path) -> Tuple[List[Dict[str, Any]], Dict[str, Any]
     return records, metadata
 
 
-def find_input_file_lists(input_dir: Path, cpk_file: Optional[str], fai_file: Optional[str]) -> Tuple[List[Path], List[Path]]:
+def find_input_file_lists(input_dir: Path, cpk_file: Optional[str], fai_file: Optional[str], require_cpk: bool = True, require_fai: bool = True) -> Tuple[List[Path], List[Path]]:
     if cpk_file:
         cpk_path = Path(cpk_file)
         if not cpk_path.is_absolute():
@@ -503,7 +506,7 @@ def find_input_file_lists(input_dir: Path, cpk_file: Optional[str], fai_file: Op
         cpk_paths = [cpk_path]
     else:
         cpk_paths = sorted(p for p in input_dir.glob("*.xls*") if "CPK" in p.name.upper() and not p.name.startswith(".~") and not p.name.startswith("~$"))
-        if not cpk_paths:
+        if require_cpk and not cpk_paths:
             raise FileNotFoundError("No CPK Excel file found. Use --cpk-file.")
 
     if fai_file:
@@ -513,7 +516,7 @@ def find_input_file_lists(input_dir: Path, cpk_file: Optional[str], fai_file: Op
         fai_paths = [fai_path]
     else:
         fai_paths = sorted(p for p in input_dir.glob("*.xls*") if "FAI" in p.name.upper() and not p.name.startswith(".~") and not p.name.startswith("~$"))
-        if not fai_paths:
+        if require_fai and not fai_paths:
             raise FileNotFoundError("No FAI Excel file found. Use --fai-file.")
 
     for path in cpk_paths + fai_paths:
@@ -583,10 +586,38 @@ def add_sheet(wb: Workbook, title: str, headers: List[str], rows: List[Dict[str,
 def source_label(source: Any) -> str:
     if isinstance(source, (list, tuple)):
         names = [Path(item).name for item in source]
+        if not names:
+            return ""
         if len(names) <= 5:
             return "; ".join(names)
         return "%s files: %s ..." % (len(names), "; ".join(names[:5]))
     return Path(source).name
+
+
+def group_cpk_spc_status(cpk_records: List[Dict[str, Any]], target_cpk: float) -> List[Dict[str, Any]]:
+    groups: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for record in cpk_records:
+        if record.get("sheet_kind") != "CPK":
+            continue
+        spc_no = clean_text(record.get("spc_no"))
+        fai_no = clean_text(record.get("fai_no"))
+        if not spc_no or not fai_no:
+            continue
+        key = (clean_text(record.get("source_file")), spc_no, fai_no)
+        groups[key].append(record)
+    rows = []
+    for (source_file, spc_no, fai_no), records in sorted(groups.items()):
+        cpk_values = [r.get("cpk") for r in records if r.get("cpk") is not None]
+        is_ng = any(value < target_cpk for value in cpk_values) or not cpk_values
+        rows.append({
+            "source_file": source_file,
+            "spc_no": spc_no,
+            "fai_no": fai_no,
+            "row_count": len(records),
+            "min_cpk": min(cpk_values, default=None),
+            "spc_status": "NG" if is_ng else "OK",
+        })
+    return rows
 
 
 def build_summary_rows(cpk_records: List[Dict[str, Any]], fai_records: List[Dict[str, Any]], target_cpk: float, cpk_path: Any, fai_path: Any) -> List[Dict[str, Any]]:
@@ -594,15 +625,16 @@ def build_summary_rows(cpk_records: List[Dict[str, Any]], fai_records: List[Dict
     fai_item_ng = sum(1 for r in fai_records if r.get("status") == "NG")
     fai_sample_ok = sum(int(r.get("sample_ok") or 0) for r in fai_records)
     fai_sample_ng = sum(int(r.get("sample_ng") or 0) for r in fai_records)
-    cpk_with_value = [r for r in cpk_records if r.get("cpk") is not None]
+    cpk_table_records = [r for r in cpk_records if r.get("sheet_kind") == "CPK"]
+    cpk_with_value = [r for r in cpk_table_records if r.get("cpk") is not None]
     low_cpk = [r for r in cpk_with_value if r["cpk"] < target_cpk]
-    spc_status = group_spc_status(fai_records)
+    spc_status = group_cpk_spc_status(cpk_records, target_cpk)
     rows = [
         {"Metric": "Generated At", "Value": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
         {"Metric": "CPK File", "Value": source_label(cpk_path)},
         {"Metric": "FAI File", "Value": source_label(fai_path)},
         {"Metric": "Target CPK", "Value": target_cpk},
-        {"Metric": "CPK Dimension Rows", "Value": len(cpk_records)},
+        {"Metric": "CPK Dimension Rows", "Value": len(cpk_table_records)},
         {"Metric": "CPK Rows With CPK", "Value": len(cpk_with_value)},
         {"Metric": "CPK < Target Rows", "Value": len(low_cpk)},
         {"Metric": "Minimum CPK", "Value": min((r["cpk"] for r in cpk_with_value), default=None)},
@@ -699,6 +731,9 @@ def export_workbook(output_path: Path, cpk_records: List[Dict[str, Any]], fai_re
     spc_rows = group_spc_status(fai_records)
     add_sheet(wb, "SPC_OK_NG", ["cavity", "spc_no", "fai_count", "item_count", "sample_count", "sample_ng", "spc_status", "ng_fai_list"], spc_rows)
 
+    cpk_spc_rows = group_cpk_spc_status(cpk_records, target_cpk)
+    add_sheet(wb, "CPK_SPC_OK_NG", ["source_file", "spc_no", "fai_no", "row_count", "min_cpk", "spc_status"], cpk_spc_rows)
+
     worst_rows = worst_cavity_rows(cpk_records)
     add_sheet(wb, "Worst_Cavity", ["spc_no", "worst_sheet_kind", "worst_fai_no", "description", "worst_cavity", "worst_cpk", "worst_mean", "worst_stddev", "sample_count"], worst_rows)
 
@@ -719,7 +754,9 @@ def main() -> int:
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir).resolve()
-    cpk_paths, fai_paths = find_input_file_lists(input_dir, args.cpk_file, args.fai_file)
+    cpk_paths, fai_paths = find_input_file_lists(input_dir, args.cpk_file, args.fai_file, require_cpk=False, require_fai=False)
+    if not cpk_paths and not fai_paths:
+        raise FileNotFoundError("No CPK or FAI Excel file found.")
     if args.output:
         output_path = Path(args.output)
         if not output_path.is_absolute():
