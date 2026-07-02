@@ -441,7 +441,7 @@ def parse_cpk_workbook(path: Path, target_cpk: float) -> Tuple[List[Dict[str, An
 def parse_fai_workbook(path: Path) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     with ExcelXmlReader(path) as reader:
-        fai_sheets = [s for s in reader.sheet_names() if re.match(r"N[A-Za-z]\s*\d+", s, flags=re.I)]
+        fai_sheets = [s for s in reader.sheet_names() if re.match(r"(?:N[A-Za-z]|CAV)\s*\d+$", s, flags=re.I)]
         part_info = parse_part_info(reader, fai_sheets + reader.sheet_names())
         for sheet_name in fai_sheets:
             cavity = normalize_cavity(sheet_name)
